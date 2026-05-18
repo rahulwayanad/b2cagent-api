@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "b2cagent-api"
+version = "0.1.0"
+description = "B2C Agent backend"
+authors = ["b2cagent <rahul.protracked@gmail.com>"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.115.0"
+uvicorn = {extras = ["standard"], version = "^0.32.0"}
+sqlalchemy = {extras = ["asyncio"], version = "^2.0.36"}
+asyncpg = "^0.30.0"
+alembic = "^1.14.0"
+pydantic-settings = "^2.6.0"
+email-validator = "^2.2.0"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+httpx = "^0.27.2"
+redis = "^5.2.0"
+twilio = "^9.3.7"
+python-multipart = "^0.0.17"
+boto3 = "^1.35.60"
+pillow = "^11.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.3"
+pytest-asyncio = "^0.24.0"
+ruff = "^0.7.4"
+fakeredis = "^2.26.1"
+aiosqlite = "^0.20.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
