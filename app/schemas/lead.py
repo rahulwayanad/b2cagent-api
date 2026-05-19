@@ -12,6 +12,9 @@ class LeadCreate(BaseModel):
     customer_name: str = Field(..., min_length=2, max_length=200)
     customer_email: EmailStr | None = None
     customer_phone: str | None = Field(None, min_length=5, max_length=20)
+    customer_location_text: str | None = Field(None, max_length=512)
+    customer_lat: float | None = None
+    customer_lng: float | None = None
     check_in: date
     check_out: date
     adults: int = Field(1, ge=1, le=50)
@@ -40,8 +43,33 @@ class LeadUpdate(BaseModel):
     customer_name: str | None = Field(None, min_length=2, max_length=200)
     customer_email: EmailStr | None = None
     customer_phone: str | None = Field(None, min_length=5, max_length=20)
+    customer_location_text: str | None = Field(None, max_length=512)
+    customer_lat: float | None = None
+    customer_lng: float | None = None
+    check_in: date | None = None
+    check_out: date | None = None
+    adults: int | None = Field(None, ge=1, le=50)
+    children: int | None = Field(None, ge=0, le=50)
+    budget_min: Decimal | None = Field(None, ge=0)
+    budget_max: Decimal | None = Field(None, ge=0)
     notes: str | None = None
     special_requirements: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self):
+        if (
+            self.check_in is not None
+            and self.check_out is not None
+            and self.check_out < self.check_in
+        ):
+            raise ValueError("check_out must be on or after check_in")
+        if (
+            self.budget_min is not None
+            and self.budget_max is not None
+            and self.budget_max < self.budget_min
+        ):
+            raise ValueError("budget_max must be >= budget_min")
+        return self
 
 
 class LeadStatusUpdate(BaseModel):
@@ -54,6 +82,9 @@ class LeadResponse(BaseModel):
     customer_name: str
     customer_email: str | None
     customer_phone: str | None
+    customer_location_text: str | None = None
+    customer_lat: float | None = None
+    customer_lng: float | None = None
     check_in: date
     check_out: date
     is_single_day: bool
@@ -105,6 +136,12 @@ class MatchedPropertyResponse(BaseModel):
     property_id: uuid.UUID
     name: str
     location_text: str | None
+    street: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    lat: float | None = None
+    lng: float | None = None
     property_type: str | None
     b2c_rate: Decimal
     b2b_rate: Decimal

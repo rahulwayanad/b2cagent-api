@@ -10,10 +10,13 @@ from app.core.security import require_active_role
 from app.models import (
     Bid,
     BidStatus,
+    Booking,
+    BookingStatus,
     Lead,
     LeadPropertyMatch,
     LeadStatus,
     Property,
+    PropertyAvailabilityBlock,
     PropertyStatus,
     User,
     UserRole,
@@ -60,20 +63,69 @@ async def _get_owned_lead(
     return lead
 
 
-async def _counts_for_lead(lead_id: uuid.UUID, db: AsyncSession) -> tuple[int, int]:
-    match_count = await db.scalar(
-        select(func.count(LeadPropertyMatch.id)).where(
-            LeadPropertyMatch.lead_id == lead_id,
-            LeadPropertyMatch.is_hidden.is_(False),
-        )
+# Must mirror frontend MAX_DISTANCE_KM in LeadDetailPage so the count shown
+# in the leads list ("0/9") matches the matches the agent actually sees.
+_MATCHED_RADIUS_KM = 100.0
+
+
+def _haversine_km(
+    a_lat: float, a_lng: float, b_lat: float, b_lng: float
+) -> float:
+    from math import asin, cos, radians, sin, sqrt
+
+    R = 6371.0
+    dlat = radians(b_lat - a_lat)
+    dlng = radians(b_lng - a_lng)
+    s = (
+        sin(dlat / 2) ** 2
+        + cos(radians(a_lat)) * cos(radians(b_lat)) * sin(dlng / 2) ** 2
     )
+    return 2 * R * asin(sqrt(s))
+
+
+async def _counts_for_lead(lead_id: uuid.UUID, db: AsyncSession) -> tuple[int, int]:
+    # Load matches + property fields so we can apply the same visibility rules
+    # the frontend uses (must have coordinates, must be within radius of
+    # customer's preferred location when set, property must be active).
+    lead = await db.get(Lead, lead_id)
+    rows = (
+        await db.execute(
+            select(LeadPropertyMatch, Property)
+            .join(Property, LeadPropertyMatch.property_id == Property.id)
+            .where(
+                LeadPropertyMatch.lead_id == lead_id,
+                LeadPropertyMatch.is_hidden.is_(False),
+            )
+        )
+    ).all()
+
+    has_origin = (
+        lead is not None
+        and lead.customer_lat is not None
+        and lead.customer_lng is not None
+    )
+
+    match_count = 0
+    for _match, prop in rows:
+        if prop.status != PropertyStatus.active:
+            continue
+        if prop.lat is None or prop.lng is None:
+            continue
+        if has_origin:
+            d = _haversine_km(
+                lead.customer_lat, lead.customer_lng, prop.lat, prop.lng
+            )
+            if d > _MATCHED_RADIUS_KM:
+                continue
+        match_count += 1
+
     bid_count = await db.scalar(
         select(func.count(Bid.id)).where(
             Bid.lead_id == lead_id,
             Bid.status != BidStatus.withdrawn,
         )
     )
-    return int(match_count or 0), int(bid_count or 0)
+    return match_count, int(bid_count or 0)
 
 
 def _lead_to_response(lead: Lead, matches: int, bids: int) -> LeadResponse:
@@ -82,6 +134,9 @@ def _lead_to_response(lead: Lead, matches: int, bids: int) -> LeadResponse:
         customer_name=lead.customer_name,
         customer_email=lead.customer_email,
         customer_phone=lead.customer_phone,
+        customer_location_text=lead.customer_location_text,
+        customer_lat=lead.customer_lat,
+        customer_lng=lead.customer_lng,
         check_in=lead.check_in,
         check_out=lead.check_out,
         is_single_day=lead.is_single_day,
@@ -113,6 +168,9 @@ async def create_lead(
         customer_name=payload.customer_name,
         customer_email=payload.customer_email,
         customer_phone=payload.customer_phone,
+        customer_location_text=payload.customer_location_text,
+        customer_lat=payload.customer_lat,
+        customer_lng=payload.customer_lng,
         check_in=payload.check_in,
         check_out=payload.check_out,
         is_single_day=payload.check_in == payload.check_out,
@@ -190,10 +248,29 @@ async def update_lead(
             detail=f"Cannot update lead in status={lead.status.value}",
         )
     updates = payload.model_dump(exclude_unset=True)
+    # Track which fields impact property matching — when they change we re-run
+    # the matcher so the agent's matched-properties list stays in sync.
+    rematch_fields = {"check_in", "check_out", "adults", "children"}
+    needs_rematch = any(k in updates for k in rematch_fields)
+
     for k, v in updates.items():
         setattr(lead, k, v)
+    # Keep is_single_day consistent with the stored date range.
+    if "check_in" in updates or "check_out" in updates:
+        lead.is_single_day = lead.check_in == lead.check_out
+    # Cross-field guard in case only one date was sent and now they're inverted.
+    if lead.check_out < lead.check_in:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="check_out must be on or after check_in",
+        )
+
     await db.commit()
     await db.refresh(lead)
+
+    if needs_rematch:
+        await match_properties_for_lead(lead, db, replace_existing=True)
+
     matches, bids = await _counts_for_lead(lead.id, db)
     return _lead_to_response(lead, matches, bids)
 
@@ -273,6 +350,12 @@ async def get_lead_properties(
                 property_id=prop.id,
                 name=prop.name,
                 location_text=prop.location_text,
+                street=prop.street,
+                city=prop.city,
+                state=prop.state,
+                country=prop.country,
+                lat=prop.lat,
+                lng=prop.lng,
                 property_type=prop.property_type.value if prop.property_type else None,
                 b2c_rate=prop.b2c_rate,
                 b2b_rate=prop.b2b_rate,
@@ -368,6 +451,42 @@ async def place_bid(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Bid amount is below the accepted minimum",
+        )
+
+    # Availability gate — block bids if the requested dates clash with an
+    # existing booking or a manager-imposed block.
+    overlapping_booking = await db.scalar(
+        select(Booking).where(
+            Booking.property_id == property_id,
+            Booking.status == BookingStatus.active,
+            Booking.check_in <= lead.check_out,
+            Booking.check_out >= lead.check_in,
+        )
+    )
+    if overlapping_booking is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Property is already booked "
+                f"{overlapping_booking.check_in.isoformat()} → "
+                f"{overlapping_booking.check_out.isoformat()}"
+            ),
+        )
+    overlapping_block = await db.scalar(
+        select(PropertyAvailabilityBlock).where(
+            PropertyAvailabilityBlock.property_id == property_id,
+            PropertyAvailabilityBlock.start_date <= lead.check_out,
+            PropertyAvailabilityBlock.end_date >= lead.check_in,
+        )
+    )
+    if overlapping_block is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Property is closed by the manager "
+                f"{overlapping_block.start_date.isoformat()} → "
+                f"{overlapping_block.end_date.isoformat()}"
+            ),
         )
 
     existing = await db.scalar(

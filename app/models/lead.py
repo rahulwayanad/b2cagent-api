@@ -10,6 +10,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Enum as SAEnum,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -43,6 +44,12 @@ class Lead(UUIDPKMixin, TimestampMixin, Base):
     customer_name: Mapped[str] = mapped_column(String(200), nullable=False)
     customer_email: Mapped[str | None] = mapped_column(String(200), nullable=True)
     customer_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Where the customer wants to stay (from OpenStreetMap/Nominatim).
+    customer_location_text: Mapped[str | None] = mapped_column(
+        String(512), nullable=True
+    )
+    customer_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    customer_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     check_in: Mapped[date] = mapped_column(Date, nullable=False)
     check_out: Mapped[date] = mapped_column(Date, nullable=False)
     is_single_day: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

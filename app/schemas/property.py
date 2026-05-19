@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -43,6 +43,32 @@ class PhotoOut(BaseModel):
     sort_order: int
 
 
+class DayPriceOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    date: date
+    b2b_rate: Decimal | None = None
+    b2c_rate: Decimal | None = None
+
+
+class DayPriceUpsert(BaseModel):
+    b2b_rate: Decimal | None = Field(None, ge=0)
+    b2c_rate: Decimal | None = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def _at_least_one(self):
+        if self.b2b_rate is None and self.b2c_rate is None:
+            raise ValueError(
+                "Provide at least one of b2b_rate or b2c_rate"
+            )
+        if (
+            self.b2b_rate is not None
+            and self.b2c_rate is not None
+            and self.b2c_rate < self.b2b_rate
+        ):
+            raise ValueError("b2c_rate must be at least the b2b_rate floor")
+        return self
+
+
 class _GuestBoundsMixin(BaseModel):
     @model_validator(mode="after")
     def _check_guest_bounds(self):
@@ -59,6 +85,10 @@ class PropertyCreate(_GuestBoundsMixin):
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     location_text: str | None = Field(None, max_length=512)
+    street: str | None = Field(None, max_length=255)
+    city: str | None = Field(None, max_length=128)
+    state: str | None = Field(None, max_length=128)
+    country: str | None = Field(None, max_length=128)
     lat: float | None = None
     lng: float | None = None
     b2b_rate: Decimal = Field(..., ge=0)
@@ -78,6 +108,10 @@ class PropertyUpdate(_GuestBoundsMixin):
     name: str | None = Field(None, min_length=1, max_length=255)
     description: str | None = None
     location_text: str | None = Field(None, max_length=512)
+    street: str | None = Field(None, max_length=255)
+    city: str | None = Field(None, max_length=128)
+    state: str | None = Field(None, max_length=128)
+    country: str | None = Field(None, max_length=128)
     lat: float | None = None
     lng: float | None = None
     b2b_rate: Decimal | None = Field(None, ge=0)
@@ -101,6 +135,10 @@ class PropertyOut(BaseModel):
     name: str
     description: str | None = None
     location_text: str | None = None
+    street: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
     lat: float | None = None
     lng: float | None = None
     status: PropertyStatus
@@ -114,6 +152,9 @@ class PropertyOut(BaseModel):
     bathrooms: int | None = None
     min_guests: int | None = None
     max_guests: int | None = None
+    # Aggregated from related PropertyRoom rows; 0 when no rooms configured.
+    room_count: int = 0
+    sleeps_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -140,9 +181,14 @@ class PropertyAvailableOut(BaseModel):
     name: str
     description: str | None = None
     location_text: str | None = None
+    street: str | None = None
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
     lat: float | None = None
     lng: float | None = None
     status: PropertyStatus
+    b2b_rate: Decimal
     b2c_rate: Decimal
     property_type: PropertyType | None = None
     privacy_type: PrivacyType | None = None
@@ -152,6 +198,8 @@ class PropertyAvailableOut(BaseModel):
     bathrooms: int | None = None
     min_guests: int | None = None
     max_guests: int | None = None
+    room_count: int = 0
+    sleeps_count: int = 0
     created_at: datetime
     updated_at: datetime
 

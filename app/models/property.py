@@ -14,6 +14,7 @@ from app.models.mixins import TimestampMixin, UUIDPKMixin
 if TYPE_CHECKING:
     from app.models.bid import Bid
     from app.models.property_amenity import PropertyAmenity
+    from app.models.property_day_price import PropertyDayPrice
     from app.models.property_photo import PropertyPhoto
     from app.models.property_room import PropertyRoom
     from app.models.user import User
@@ -31,6 +32,10 @@ class Property(UUIDPKMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     location_text: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    street: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    state: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[PropertyStatus] = mapped_column(
@@ -72,6 +77,11 @@ class Property(UUIDPKMixin, TimestampMixin, Base):
     )
     bids: Mapped[list["Bid"]] = relationship(
         "Bid",
+        back_populates="property",
+        cascade="all, delete-orphan",
+    )
+    day_prices: Mapped[list["PropertyDayPrice"]] = relationship(
+        "PropertyDayPrice",
         back_populates="property",
         cascade="all, delete-orphan",
     )

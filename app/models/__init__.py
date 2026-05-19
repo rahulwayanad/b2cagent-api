@@ -12,6 +12,7 @@ from app.models.field_config import FieldConfig
 from app.models.lead import Lead, LeadPropertyMatch
 from app.models.property import Property
 from app.models.property_amenity import PropertyAmenity
+from app.models.property_day_price import PropertyDayPrice
 from app.models.property_photo import PropertyPhoto
 from app.models.property_room import PropertyRoom
 from app.models.user import User
@@ -29,6 +30,7 @@ __all__ = [
     "Property",
     "PropertyAmenity",
     "PropertyAvailabilityBlock",
+    "PropertyDayPrice",
     "PropertyPhoto",
     "PropertyRoom",
     "PropertyStatus",

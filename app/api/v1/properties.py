@@ -27,6 +27,7 @@ from app.models import (
     Property,
     PropertyAmenity,
     PropertyAvailabilityBlock,
+    PropertyDayPrice,
     PropertyPhoto,
     PropertyRoom,
     PropertyStatus,
@@ -37,6 +38,8 @@ from app.schemas.booking import BlockCreate, BlockOut, BookingOut
 from app.schemas.property import (
     AmenityCreate,
     AmenityOut,
+    DayPriceOut,
+    DayPriceUpsert,
     PhotoOut,
     PropertyCreate,
     PropertyDetailOut,
@@ -213,14 +216,32 @@ async def list_properties(
         select(func.count()).select_from(base.subquery())
     )
     items_query = (
-        base.order_by(Property.created_at.desc()).limit(limit).offset(offset)
+        base.options(selectinload(Property.rooms))
+        .order_by(Property.created_at.desc())
+        .limit(limit)
+        .offset(offset)
     )
     items = (await db.scalars(items_query)).all()
     return PropertyListOut(
-        items=[PropertyOut.model_validate(p) for p in items],
+        items=[_property_to_out(p) for p in items],
         total=total or 0,
         limit=limit,
         offset=offset,
+    )
+
+
+def _room_totals(prop: Property) -> tuple[int, int]:
+    """Sum (room_count, sleeps_count) across the property's PropertyRoom rows."""
+    rooms = prop.rooms
+    room_count = sum(r.count or 0 for r in rooms)
+    sleeps_count = sum((r.capacity or 0) * (r.count or 0) for r in rooms)
+    return room_count, sleeps_count
+
+
+def _property_to_out(prop: Property) -> PropertyOut:
+    room_count, sleeps_count = _room_totals(prop)
+    return PropertyOut.model_validate(prop).model_copy(
+        update={"room_count": room_count, "sleeps_count": sleeps_count}
     )
 
 
@@ -249,7 +270,10 @@ async def get_property(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="you do not own this property",
         )
-    return PropertyDetailOut.model_validate(prop)
+    room_count, sleeps_count = _room_totals(prop)
+    return PropertyDetailOut.model_validate(prop).model_copy(
+        update={"room_count": room_count, "sleeps_count": sleeps_count}
+    )
 
 
 @router.patch("/{property_id}", response_model=PropertyOut)
@@ -579,4 +603,115 @@ async def delete_block(
         )
     await db.delete(block)
     await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---- per-day price overrides ----------------------------------------------
+
+
+@router.get(
+    "/{property_id}/day-prices", response_model=list[DayPriceOut]
+)
+async def list_day_prices(
+    start: str = Query(..., description="YYYY-MM-DD inclusive"),
+    end: str = Query(..., description="YYYY-MM-DD inclusive"),
+    prop: Property = Depends(get_owned_property),
+    db: AsyncSession = Depends(get_db),
+) -> list[DayPriceOut]:
+    from datetime import date as _date
+
+    try:
+        start_d = _date.fromisoformat(start)
+        end_d = _date.fromisoformat(end)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid date: {e}",
+        ) from e
+    if end_d < start_d:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="end must be on or after start",
+        )
+    rows = (
+        await db.scalars(
+            select(PropertyDayPrice)
+            .where(
+                PropertyDayPrice.property_id == prop.id,
+                PropertyDayPrice.date >= start_d,
+                PropertyDayPrice.date <= end_d,
+            )
+            .order_by(PropertyDayPrice.date.asc())
+        )
+    ).all()
+    return [DayPriceOut.model_validate(r) for r in rows]
+
+
+@router.put(
+    "/{property_id}/day-prices/{day}", response_model=DayPriceOut
+)
+async def upsert_day_price(
+    day: str,
+    payload: DayPriceUpsert,
+    prop: Property = Depends(get_owned_property),
+    db: AsyncSession = Depends(get_db),
+) -> DayPriceOut:
+    from datetime import date as _date
+
+    try:
+        d = _date.fromisoformat(day)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid date: {e}",
+        ) from e
+    existing = await db.scalar(
+        select(PropertyDayPrice).where(
+            PropertyDayPrice.property_id == prop.id,
+            PropertyDayPrice.date == d,
+        )
+    )
+    if existing is None:
+        existing = PropertyDayPrice(
+            property_id=prop.id,
+            date=d,
+            b2b_rate=payload.b2b_rate,
+            b2c_rate=payload.b2c_rate,
+        )
+        db.add(existing)
+    else:
+        existing.b2b_rate = payload.b2b_rate
+        existing.b2c_rate = payload.b2c_rate
+    await db.commit()
+    await db.refresh(existing)
+    return DayPriceOut.model_validate(existing)
+
+
+@router.delete(
+    "/{property_id}/day-prices/{day}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_day_price(
+    day: str,
+    prop: Property = Depends(get_owned_property),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    from datetime import date as _date
+
+    try:
+        d = _date.fromisoformat(day)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid date: {e}",
+        ) from e
+    row = await db.scalar(
+        select(PropertyDayPrice).where(
+            PropertyDayPrice.property_id == prop.id,
+            PropertyDayPrice.date == d,
+        )
+    )
+    if row is not None:
+        await db.delete(row)
+        await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
