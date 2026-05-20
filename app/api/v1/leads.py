@@ -21,6 +21,7 @@ from app.models import (
     User,
     UserRole,
 )
+from app.schemas.bid_payment import BidPaymentSummary
 from app.schemas.lead import (
     BidResponse,
     BidSummary,
@@ -38,6 +39,7 @@ from app.services.lead_matching_service import (
     expire_overdue_leads,
     match_properties_for_lead,
 )
+from app.services.subscription_service import check_agent_can_bid
 
 router = APIRouter(prefix="/leads", tags=["leads"])
 
@@ -81,6 +83,16 @@ def _haversine_km(
         + cos(radians(a_lat)) * cos(radians(b_lat)) * sin(dlng / 2) ** 2
     )
     return 2 * R * asin(sqrt(s))
+
+
+async def _lead_has_booking(lead_id: uuid.UUID, db: AsyncSession) -> bool:
+    booking = await db.scalar(
+        select(Booking.id).where(
+            Booking.lead_id == lead_id,
+            Booking.status == BookingStatus.active,
+        )
+    )
+    return booking is not None
 
 
 async def _counts_for_lead(lead_id: uuid.UUID, db: AsyncSession) -> tuple[int, int]:
@@ -128,7 +140,9 @@ async def _counts_for_lead(lead_id: uuid.UUID, db: AsyncSession) -> tuple[int, i
     return match_count, int(bid_count or 0)
 
 
-def _lead_to_response(lead: Lead, matches: int, bids: int) -> LeadResponse:
+def _lead_to_response(
+    lead: Lead, matches: int, bids: int, has_booking: bool = False
+) -> LeadResponse:
     return LeadResponse(
         id=lead.id,
         customer_name=lead.customer_name,
@@ -149,6 +163,7 @@ def _lead_to_response(lead: Lead, matches: int, bids: int) -> LeadResponse:
         status=lead.status,
         matched_properties_count=matches,
         bids_count=bids,
+        has_booking=has_booking,
         created_at=lead.created_at,
     )
 
@@ -190,7 +205,8 @@ async def create_lead(
     # delay this and the client would see 0 matches on the first render.
     await match_properties_for_lead(lead, db, replace_existing=True)
     matches, bids = await _counts_for_lead(lead.id, db)
-    return _lead_to_response(lead, matches, bids)
+    booked = await _lead_has_booking(lead.id, db)
+    return _lead_to_response(lead, matches, bids, booked)
 
 
 @router.get("", response_model=LeadListResponse)
@@ -218,7 +234,8 @@ async def list_leads(
     out: list[LeadResponse] = []
     for lead in items:
         matches, bids = await _counts_for_lead(lead.id, db)
-        out.append(_lead_to_response(lead, matches, bids))
+        booked = await _lead_has_booking(lead.id, db)
+        out.append(_lead_to_response(lead, matches, bids, booked))
     return LeadListResponse(items=out, total=int(total or 0), page=page, limit=limit)
 
 
@@ -231,7 +248,8 @@ async def get_lead(
     await expire_overdue_leads(db)
     lead = await _get_owned_lead(lead_id, user, db)
     matches, bids = await _counts_for_lead(lead.id, db)
-    return _lead_to_response(lead, matches, bids)
+    booked = await _lead_has_booking(lead.id, db)
+    return _lead_to_response(lead, matches, bids, booked)
 
 
 @router.patch("/{lead_id}", response_model=LeadResponse)
@@ -247,6 +265,19 @@ async def update_lead(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Cannot update lead in status={lead.status.value}",
         )
+    # Once a bid exists on this lead, edits would invalidate the bid terms
+    # (dates, guests etc.). The agent must withdraw existing bids first.
+    active_bid_count = await db.scalar(
+        select(func.count(Bid.id)).where(
+            Bid.lead_id == lead.id,
+            Bid.status != BidStatus.withdrawn,
+        )
+    )
+    if (active_bid_count or 0) > 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot edit lead — bids already exist. Withdraw bids first.",
+        )
     updates = payload.model_dump(exclude_unset=True)
     # Track which fields impact property matching — when they change we re-run
     # the matcher so the agent's matched-properties list stays in sync.
@@ -259,10 +290,10 @@ async def update_lead(
     if "check_in" in updates or "check_out" in updates:
         lead.is_single_day = lead.check_in == lead.check_out
     # Cross-field guard in case only one date was sent and now they're inverted.
-    if lead.check_out < lead.check_in:
+    if lead.check_out <= lead.check_in:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="check_out must be on or after check_in",
+            detail="check_out must be at least one day after check_in",
         )
 
     await db.commit()
@@ -272,7 +303,8 @@ async def update_lead(
         await match_properties_for_lead(lead, db, replace_existing=True)
 
     matches, bids = await _counts_for_lead(lead.id, db)
-    return _lead_to_response(lead, matches, bids)
+    booked = await _lead_has_booking(lead.id, db)
+    return _lead_to_response(lead, matches, bids, booked)
 
 
 @router.patch("/{lead_id}/status", response_model=LeadResponse)
@@ -292,7 +324,8 @@ async def update_lead_status(
     await db.commit()
     await db.refresh(lead)
     matches, bids = await _counts_for_lead(lead.id, db)
-    return _lead_to_response(lead, matches, bids)
+    booked = await _lead_has_booking(lead.id, db)
+    return _lead_to_response(lead, matches, bids, booked)
 
 
 @router.get("/{lead_id}/properties", response_model=MatchedPropertyListResponse)
@@ -321,9 +354,9 @@ async def get_lead_properties(
 
     # Existing bids for this lead, keyed by property_id (latest non-withdrawn wins).
     bids_result = await db.execute(
-        select(Bid).where(
-            Bid.lead_id == lead.id,
-        )
+        select(Bid)
+        .options(selectinload(Bid.payment))
+        .where(Bid.lead_id == lead.id)
     )
     bids_by_prop: dict[uuid.UUID, Bid] = {}
     for b in bids_result.scalars().all():
@@ -364,7 +397,14 @@ async def get_lead_properties(
                 room_summary=prop.rooms,
                 match_score=m.match_score,
                 is_hidden=m.is_hidden,
-                existing_bid=BidSummary(id=bid.id, amount=bid.amount, status=bid.status)
+                existing_bid=BidSummary(
+                    id=bid.id,
+                    amount=bid.amount,
+                    status=bid.status,
+                    payment=BidPaymentSummary.model_validate(bid.payment)
+                    if bid.payment
+                    else None,
+                )
                 if bid is not None
                 else None,
             )
@@ -438,6 +478,19 @@ async def place_bid(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Lead is not active (status={lead.status.value})",
         )
+    # Defensive: even if the lead status check is somehow bypassed, refuse
+    # to place a bid once a confirmed booking exists for this lead.
+    existing_booking = await db.scalar(
+        select(Booking).where(
+            Booking.lead_id == lead.id,
+            Booking.status == BookingStatus.active,
+        )
+    )
+    if existing_booking is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lead already has a confirmed booking; no more bids allowed",
+        )
     await _get_match(lead.id, property_id, db)
 
     prop = await db.get(Property, property_id)
@@ -497,6 +550,11 @@ async def place_bid(
             status_code=status.HTTP_409_CONFLICT,
             detail="An active bid already exists for this property on this lead",
         )
+
+    # Enforce monthly bid quota for the agent's plan. Runs only when we're
+    # actually about to create or re-activate a bid (not on duplicate rejects).
+    await check_agent_can_bid(user, db)
+
     if existing is not None and existing.status == BidStatus.withdrawn:
         # Re-bid on a previously-withdrawn slot: reuse the row.
         existing.amount = payload.amount
@@ -530,20 +588,47 @@ async def withdraw_bid(
 ) -> dict:
     lead = await _get_owned_lead(lead_id, user, db)
     bid = await db.scalar(
-        select(Bid).where(Bid.lead_id == lead.id, Bid.property_id == property_id)
+        select(Bid)
+        .options(selectinload(Bid.payment))
+        .where(Bid.lead_id == lead.id, Bid.property_id == property_id)
     )
     if bid is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Bid not found"
         )
-    if bid.status != BidStatus.pending:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Can only withdraw pending bids",
-        )
-    bid.status = BidStatus.withdrawn
-    await db.commit()
-    return {"success": True}
+
+    if bid.status == BidStatus.pending:
+        bid.status = BidStatus.withdrawn
+        await db.commit()
+        return {"success": True}
+
+    if bid.status == BidStatus.accepted and bid.payment is None:
+        # Agent is cancelling an accepted-but-unpaid bid. Revive any held
+        # competing bids on the property so the manager can re-decide, and
+        # release the lead back to active.
+        bid.status = BidStatus.withdrawn
+        if lead.status == LeadStatus.won:
+            lead.status = LeadStatus.active
+        held = (
+            await db.scalars(
+                select(Bid).where(
+                    Bid.property_id == bid.property_id,
+                    Bid.id != bid.id,
+                    Bid.status == BidStatus.on_hold,
+                    Bid.check_in <= bid.check_out,
+                    Bid.check_out >= bid.check_in,
+                )
+            )
+        ).all()
+        for h in held:
+            h.status = BidStatus.pending
+        await db.commit()
+        return {"success": True}
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Cannot withdraw a bid in this state",
+    )
 
 
 @router.post("/{lead_id}/rematch", response_model=RematchResponse)

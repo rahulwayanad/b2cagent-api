@@ -19,6 +19,10 @@ class PropertyStatus(str, enum.Enum):
 class BidStatus(str, enum.Enum):
     pending = "pending"
     accepted = "accepted"
+    # Paused while another overlapping bid is in the accept→payment flow.
+    # Reverts to pending if the accepted bid is withdrawn/rejected before
+    # booking; moves to rejected once the booking lands.
+    on_hold = "on_hold"
     rejected = "rejected"
     withdrawn = "withdrawn"
 
@@ -68,3 +72,16 @@ class LeadStatus(str, enum.Enum):
     won = "won"
     lost = "lost"
     expired = "expired"
+
+
+class PaymentMethod(str, enum.Enum):
+    cash = "cash"
+    online = "online"
+
+
+class PaymentStatus(str, enum.Enum):
+    # Agent marked cash collected — waiting on manager confirmation.
+    initiated = "initiated"
+    # Online: auto on capture. Cash: manager confirmed receipt.
+    # Booking is created at the moment a payment enters this state.
+    confirmed = "confirmed"

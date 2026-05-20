@@ -13,8 +13,13 @@ from app.models import User, UserRole
 
 
 def user_roles(user: User) -> list[str]:
-    """Expand role enum into a flat list (handles 'both')."""
-    if user.role == UserRole.both:
+    """Expand role enum into a flat list.
+
+    'both' and 'super_admin' both unlock manager + agent surfaces. Admins keep
+    their elevated powers via the explicit super_admin role check at
+    /admin/... endpoints; here we just let them operate either app.
+    """
+    if user.role in (UserRole.both, UserRole.super_admin):
         return [UserRole.agent.value, UserRole.manager.value]
     return [user.role.value]
 
@@ -131,7 +136,16 @@ def require_role(role: UserRole | str):
     role_value = role.value if isinstance(role, UserRole) else role
 
     async def _dep(user: User = Depends(get_current_user)) -> User:
-        if user.role.value != role_value and user.role != UserRole.both:
+        # super_admin passes any role check below super_admin itself;
+        # require_role(super_admin) still needs an exact match.
+        if (
+            user.role.value != role_value
+            and user.role != UserRole.both
+            and not (
+                user.role == UserRole.super_admin
+                and role_value != UserRole.super_admin.value
+            )
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"requires {role_value} role",

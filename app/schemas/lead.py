@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.models import BidStatus, LeadStatus
+from app.schemas.bid_payment import BidPaymentSummary
 
 
 class LeadCreate(BaseModel):
@@ -26,8 +27,10 @@ class LeadCreate(BaseModel):
 
     @model_validator(mode="after")
     def _validate(self):
-        if self.check_out < self.check_in:
-            raise ValueError("check_out must be on or after check_in")
+        if self.check_out <= self.check_in:
+            raise ValueError(
+                "check_out must be at least one day after check_in"
+            )
         if (
             self.budget_min is not None
             and self.budget_max is not None
@@ -60,9 +63,11 @@ class LeadUpdate(BaseModel):
         if (
             self.check_in is not None
             and self.check_out is not None
-            and self.check_out < self.check_in
+            and self.check_out <= self.check_in
         ):
-            raise ValueError("check_out must be on or after check_in")
+            raise ValueError(
+                "check_out must be at least one day after check_in"
+            )
         if (
             self.budget_min is not None
             and self.budget_max is not None
@@ -97,6 +102,7 @@ class LeadResponse(BaseModel):
     status: LeadStatus
     matched_properties_count: int = 0
     bids_count: int = 0
+    has_booking: bool = False
     created_at: datetime
 
 
@@ -111,6 +117,7 @@ class BidSummary(BaseModel):
     id: uuid.UUID
     amount: Decimal
     status: BidStatus
+    payment: BidPaymentSummary | None = None
 
 
 class _AmenityOut(BaseModel):

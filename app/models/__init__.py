@@ -1,8 +1,11 @@
 from app.models.bid import Bid
+from app.models.bid_payment import BidPayment
 from app.models.booking import Booking, BookingStatus, PropertyAvailabilityBlock
 from app.models.enums import (
     BidStatus,
     LeadStatus,
+    PaymentMethod,
+    PaymentStatus,
     PrivacyType,
     PropertyStatus,
     PropertyType,
@@ -15,10 +18,12 @@ from app.models.property_amenity import PropertyAmenity
 from app.models.property_day_price import PropertyDayPrice
 from app.models.property_photo import PropertyPhoto
 from app.models.property_room import PropertyRoom
+from app.models.subscription import SubscriptionPlan, UserSubscription
 from app.models.user import User
 
 __all__ = [
     "Bid",
+    "BidPayment",
     "BidStatus",
     "Booking",
     "BookingStatus",
@@ -26,6 +31,8 @@ __all__ = [
     "Lead",
     "LeadPropertyMatch",
     "LeadStatus",
+    "PaymentMethod",
+    "PaymentStatus",
     "PrivacyType",
     "Property",
     "PropertyAmenity",
@@ -35,6 +42,8 @@ __all__ = [
     "PropertyRoom",
     "PropertyStatus",
     "PropertyType",
+    "SubscriptionPlan",
     "User",
     "UserRole",
+    "UserSubscription",
 ]

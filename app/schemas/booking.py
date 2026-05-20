@@ -25,6 +25,28 @@ class BookingOut(BaseModel):
     created_at: datetime
 
 
+# Agent-facing — joined with property metadata so a single fetch is enough
+# to render the bookings list and the lead-detail booking card.
+class AgentBookingOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    property_id: uuid.UUID
+    property_name: str
+    property_location: str | None
+    lead_id: uuid.UUID | None
+    bid_id: uuid.UUID | None
+    customer_name: str
+    customer_email: str | None
+    customer_phone: str | None
+    check_in: date
+    check_out: date
+    guests: int
+    # Per-night, matching bid.amount semantics. UI computes total = amount × nights.
+    amount: Decimal
+    status: BookingStatus
+    created_at: datetime
+
+
 class BlockCreate(BaseModel):
     start_date: date
     end_date: date
