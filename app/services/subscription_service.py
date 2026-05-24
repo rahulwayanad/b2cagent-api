@@ -140,3 +140,81 @@ async def manager_quota_summary(
         )
     )
     return code, limit, int(used or 0)
+
+
+async def _resolve_plan_for_display(
+    user: User, db: AsyncSession
+) -> SubscriptionPlan:
+    """Like get_user_plan but always returns a plan object — falls back to the
+    seeded 'free' row when the user has no subscription. Raises if the free
+    plan is missing (shouldn't happen in a properly migrated DB)."""
+    plan = await get_user_plan(user, db)
+    if plan is not None:
+        return plan
+    free = await db.scalar(
+        select(SubscriptionPlan).where(SubscriptionPlan.code == "free")
+    )
+    assert free is not None, "free plan must be seeded"
+    return free
+
+
+async def my_subscription_summary(
+    user: User, db: AsyncSession
+) -> dict:
+    """Profile-page payload covering the active_role's bid quota and the
+    user's property usage. Agents count bids they've placed this month;
+    managers count bids they've accepted this month."""
+    plan = await _resolve_plan_for_display(user, db)
+
+    is_manager_view = (
+        user.active_role == UserRole.manager or user.role == UserRole.manager
+    )
+
+    if is_manager_view:
+        bids_used = await db.scalar(
+            select(func.count(Bid.id))
+            .join(Property, Bid.property_id == Property.id)
+            .where(
+                Property.manager_id == user.id,
+                Bid.accepted_at.is_not(None),
+                Bid.accepted_at >= _month_start_utc(),
+            )
+        ) or 0
+        quota_basis = "bids_accepted"
+    else:
+        bids_used = await db.scalar(
+            select(func.count(Bid.id)).where(
+                Bid.agent_id == user.id,
+                Bid.created_at >= _month_start_utc(),
+            )
+        ) or 0
+        quota_basis = "bids_placed"
+
+    properties_used = await db.scalar(
+        select(func.count(Property.id)).where(Property.manager_id == user.id)
+    ) or 0
+
+    bids_remaining = (
+        None
+        if plan.monthly_bid_limit is None
+        else max(0, plan.monthly_bid_limit - int(bids_used))
+    )
+    properties_remaining = (
+        None
+        if plan.monthly_property_limit is None
+        else max(0, plan.monthly_property_limit - int(properties_used))
+    )
+
+    return {
+        "plan_code": plan.code,
+        "plan_name": plan.name,
+        "price": plan.price,
+        "monthly_bid_limit": plan.monthly_bid_limit,
+        "monthly_property_limit": plan.monthly_property_limit,
+        "broker_phone_visible": plan.broker_phone_visible,
+        "bids_used_this_month": int(bids_used),
+        "bids_remaining": bids_remaining,
+        "properties_used": int(properties_used),
+        "properties_remaining": properties_remaining,
+        "quota_basis": quota_basis,
+    }

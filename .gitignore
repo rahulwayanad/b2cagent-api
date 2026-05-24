@@ -7,3 +7,6 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 *.log
+
+# Locally-stored user uploads (photos, etc.). Backed by LOCAL_UPLOAD_DIR.
+uploads/

@@ -3,7 +3,9 @@ import secrets
 
 from fastapi import HTTPException, status
 from redis.asyncio import Redis
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.email_template_service import send_templated_email
 from app.services.notifications import EmailSender
 
 OTP_TTL_SECONDS = 300
@@ -20,18 +22,36 @@ class OTPService:
         self.redis = redis
         self.email_sender = email_sender
 
-    async def send_email_otp(self, email: str, user_id: str) -> None:
-        # Always overwrite any prior OTP so login retries / re-sends work
-        # without hitting a cooldown. The frontend Resend button has its own
-        # 60s disable, so this isn't a UX abuse vector in practice.
+    async def send_email_otp(
+        self,
+        email: str,
+        user_id: str,
+        *,
+        db: AsyncSession | None = None,
+        name: str = "there",
+    ) -> None:
         otp = f"{secrets.randbelow(1_000_000):06d}"
         await self.redis.set(_otp_key(user_id), otp, ex=OTP_TTL_SECONDS)
 
         otp_logger.warning("OTP for %s (user %s): %s", email, user_id, otp)
 
+        context = {"name": name, "otp": otp}
+        if db is not None:
+            sent = await send_templated_email(
+                db,
+                self.email_sender,
+                code="otp",
+                to=email,
+                context=context,
+                fallback_subject="Your B2C Tour Agent verification code",
+                fallback_body="Your OTP is {otp}. Valid for 5 minutes.",
+            )
+            if sent:
+                return
+        # No db (legacy callers) or template disabled — send hardcoded.
         await self.email_sender.send(
             to=email,
-            subject="Your ResortBid OTP",
+            subject="Your B2C Tour Agent verification code",
             body=f"Your OTP is {otp}. Valid for 5 minutes.",
         )
 

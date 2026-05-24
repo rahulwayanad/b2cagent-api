@@ -35,6 +35,7 @@ from app.models import (
     UserRole,
 )
 from app.schemas.bid_payment import BidPaymentCreateIn, BidPaymentOut
+from app.services import notification_service as notif_service
 
 router = APIRouter(tags=["bid-payments"])
 
@@ -91,6 +92,7 @@ async def create_bid_payment(
         notes=payload.notes,
     )
     db.add(payment)
+    await notif_service.on_payment_initiated(db, bid)
     await db.commit()
     await db.refresh(payment)
     return BidPaymentOut.model_validate(payment)
@@ -173,7 +175,9 @@ async def confirm_bid_payment(
     ).all()
     for o in others:
         o.status = BidStatus.rejected
+        await notif_service.on_bid_rejected(db, o)
 
+    await notif_service.on_payment_confirmed(db, bid)
     await db.commit()
     await db.refresh(payment)
     return BidPaymentOut.model_validate(payment)

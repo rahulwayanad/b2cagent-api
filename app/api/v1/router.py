@@ -7,8 +7,10 @@ from app.api.v1 import (
     bids,
     bookings,
     catalog,
+    inbox,
     leads,
     properties,
+    public,
     users,
 )
 
@@ -23,7 +25,9 @@ api_router.include_router(bid_payments.router)
 api_router.include_router(bookings.router)
 api_router.include_router(properties.router)
 api_router.include_router(catalog.router)
+api_router.include_router(inbox.router)
 api_router.include_router(admin.router)
+api_router.include_router(public.router)
 
 
 @api_router.get("/health")

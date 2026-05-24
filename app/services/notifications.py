@@ -1,6 +1,7 @@
 import asyncio
 import smtplib
 from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Protocol
 
 import httpx
@@ -9,7 +10,14 @@ from app.core.config import settings
 
 
 class EmailSender(Protocol):
-    async def send(self, *, to: str, subject: str, body: str) -> None: ...
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        html_body: str | None = None,
+    ) -> None: ...
 
 
 class SMSSender(Protocol):
@@ -17,8 +25,17 @@ class SMSSender(Protocol):
 
 
 class ConsoleEmailSender:
-    async def send(self, *, to: str, subject: str, body: str) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        html_body: str | None = None,
+    ) -> None:
         print(f"[email/console] to={to} subject={subject}\n{body}")
+        if html_body:
+            print(f"[email/console] (html omitted, {len(html_body)} bytes)")
 
 
 class ConsoleSMSSender:
@@ -27,30 +44,63 @@ class ConsoleSMSSender:
 
 
 class SMTPEmailSender:
-    async def send(self, *, to: str, subject: str, body: str) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        html_body: str | None = None,
+    ) -> None:
         def _send_sync() -> None:
             msg = EmailMessage()
-            msg["From"] = settings.EMAIL_FROM
+            msg["From"] = formataddr(
+                (settings.EMAIL_FROM_NAME, settings.EMAIL_FROM)
+            )
             msg["To"] = to
             msg["Subject"] = subject
             msg.set_content(body)
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as smtp:
-                if settings.SMTP_STARTTLS:
-                    smtp.starttls()
-                if settings.SMTP_USER:
-                    smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                smtp.send_message(msg)
+            if html_body:
+                msg.add_alternative(html_body, subtype="html")
+            # Port 465 = implicit TLS (SMTPS), needs SMTP_SSL.
+            # Port 587 = STARTTLS over plain SMTP.
+            if settings.SMTP_SSL:
+                with smtplib.SMTP_SSL(
+                    settings.SMTP_HOST, settings.SMTP_PORT, timeout=20
+                ) as smtp:
+                    if settings.SMTP_USER:
+                        smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    smtp.send_message(msg)
+            else:
+                with smtplib.SMTP(
+                    settings.SMTP_HOST, settings.SMTP_PORT, timeout=20
+                ) as smtp:
+                    if settings.SMTP_STARTTLS:
+                        smtp.starttls()
+                    if settings.SMTP_USER:
+                        smtp.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+                    smtp.send_message(msg)
 
         await asyncio.to_thread(_send_sync)
 
 
 class SendGridEmailSender:
-    async def send(self, *, to: str, subject: str, body: str) -> None:
+    async def send(
+        self,
+        *,
+        to: str,
+        subject: str,
+        body: str,
+        html_body: str | None = None,
+    ) -> None:
+        content = [{"type": "text/plain", "value": body}]
+        if html_body:
+            content.append({"type": "text/html", "value": html_body})
         payload = {
             "personalizations": [{"to": [{"email": to}]}],
-            "from": {"email": settings.EMAIL_FROM},
+            "from": {"email": settings.EMAIL_FROM, "name": settings.EMAIL_FROM_NAME},
             "subject": subject,
-            "content": [{"type": "text/plain", "value": body}],
+            "content": content,
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(

@@ -37,6 +37,14 @@ class SubscriptionPlan(UUIDPKMixin, TimestampMixin, Base):
     monthly_bid_limit: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
+    # NULL == unlimited properties.
+    monthly_property_limit: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    # When false, agent/manager contact phone is hidden across the app.
+    broker_phone_visible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True

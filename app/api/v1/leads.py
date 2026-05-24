@@ -39,6 +39,7 @@ from app.services.lead_matching_service import (
     expire_overdue_leads,
     match_properties_for_lead,
 )
+from app.services import notification_service as notif_service
 from app.services.subscription_service import check_agent_can_bid
 
 router = APIRouter(prefix="/leads", tags=["leads"])
@@ -576,6 +577,8 @@ async def place_bid(
 
     await db.commit()
     await db.refresh(bid)
+    await notif_service.on_bid_placed(db, bid)
+    await db.commit()
     return BidResponse.model_validate(bid)
 
 
@@ -599,6 +602,7 @@ async def withdraw_bid(
 
     if bid.status == BidStatus.pending:
         bid.status = BidStatus.withdrawn
+        await notif_service.on_bid_withdrawn(db, bid)
         await db.commit()
         return {"success": True}
 
@@ -622,6 +626,7 @@ async def withdraw_bid(
         ).all()
         for h in held:
             h.status = BidStatus.pending
+        await notif_service.on_bid_withdrawn(db, bid)
         await db.commit()
         return {"success": True}
 

@@ -3,6 +3,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.redis import get_redis
 from app.core.security import create_access_token, get_current_user, user_roles
@@ -19,6 +20,7 @@ from app.schemas.auth import (
     RegisterOut,
     UserOut,
 )
+from app.services.email_template_service import send_templated_email
 from app.services.notifications import EmailSender, get_email_sender
 from app.services.otp_service import OTPService
 
@@ -92,7 +94,9 @@ async def register(
     await db.commit()
     await db.refresh(user)
 
-    await otp_service.send_email_otp(payload.email, str(user.id))
+    await otp_service.send_email_otp(
+        payload.email, str(user.id), db=db, name=user.full_name
+    )
     return RegisterOut(success=True, message="OTP sent to your email")
 
 
@@ -108,7 +112,9 @@ async def otp_send(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
-    await otp_service.send_email_otp(user.email, str(user.id))
+    await otp_service.send_email_otp(
+        user.email, str(user.id), db=db, name=user.full_name
+    )
     return OTPSendOut(success=True, message="OTP sent")
 
 
@@ -117,6 +123,7 @@ async def otp_verify(
     payload: OTPVerifyIn,
     db: AsyncSession = Depends(get_db),
     otp_service: OTPService = Depends(get_otp_service),
+    email_sender: EmailSender = Depends(get_email_sender),
 ) -> OTPVerifyOut:
     user = await _find_user(db, payload.identifier)
     if user is None:
@@ -127,6 +134,7 @@ async def otp_verify(
 
     await otp_service.verify_otp(str(user.id), payload.otp)
 
+    is_first_verification = not user.email_verified
     user.email_verified = True
 
     roles = user_roles(user)
@@ -138,6 +146,31 @@ async def otp_verify(
 
     await db.commit()
     await db.refresh(user)
+
+    if is_first_verification:
+        role_label = active_role
+        role_action = (
+            "listing properties and accepting bids"
+            if role_label == "manager"
+            else "finding properties for your customers"
+        )
+        try:
+            await send_templated_email(
+                db,
+                email_sender,
+                code="welcome",
+                to=user.email,
+                context={
+                    "name": user.full_name,
+                    "role": role_label,
+                    "role_action": role_action,
+                    "link_url": (
+                        f"{settings.FRONTEND_BASE_URL.rstrip('/')}/dashboard"
+                    ),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     token = create_access_token(
         sub=str(user.id),

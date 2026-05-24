@@ -7,9 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_role
 from app.models import (
+    EmailTemplate,
     FieldConfig,
     SubscriptionPlan,
     User,
@@ -17,8 +19,14 @@ from app.models import (
     UserSubscription,
 )
 from app.schemas.catalog import FieldConfigOut, FieldConfigUpdate
+from app.schemas.email_template import (
+    EmailTemplateOut,
+    EmailTemplateUpdateIn,
+)
+from app.services.lead_expiry_service import expire_overdue_leads
 from app.schemas.subscription import (
     AssignPlanIn,
+    PlanUpdateIn,
     SubscriptionPlanOut,
     UserSubscriptionOut,
 )
@@ -112,6 +120,31 @@ async def list_subscription_plans(
         )
     ).all()
     return list(rows)
+
+
+@router.patch(
+    "/subscription-plans/{plan_id}", response_model=SubscriptionPlanOut
+)
+async def update_subscription_plan(
+    plan_id: uuid.UUID,
+    payload: PlanUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(super_admin_dep),
+) -> SubscriptionPlan:
+    plan = await db.get(SubscriptionPlan, plan_id)
+    if plan is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="subscription plan not found",
+        )
+    # exclude_unset so admins can clear a limit by sending null explicitly,
+    # without forcing them to send every field on a partial edit.
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(plan, field, value)
+    await db.commit()
+    await db.refresh(plan)
+    return plan
 
 
 # ---- User administration --------------------------------------------------
@@ -262,4 +295,81 @@ async def assign_user_plan(
         .options(selectinload(UserSubscription.plan))
         .where(UserSubscription.id == sub.id)
     )
+    try:
+        from app.services.email_template_service import send_templated_email
+        from app.services.notifications import get_email_sender
+
+        await send_templated_email(
+            db,
+            get_email_sender(),
+            code="subscription_upgraded",
+            to=target.email,
+            context={
+                "name": target.full_name,
+                "plan_name": plan.name,
+                "bid_limit": plan.monthly_bid_limit
+                if plan.monthly_bid_limit is not None
+                else "unlimited",
+                "property_limit": plan.monthly_property_limit
+                if plan.monthly_property_limit is not None
+                else "unlimited",
+                "link_url": (
+                    f"{settings.FRONTEND_BASE_URL.rstrip('/')}/manager/profile"
+                ),
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
     return out  # type: ignore[return-value]
+
+
+# ---- Email templates ------------------------------------------------------
+
+
+@router.get("/email-templates", response_model=list[EmailTemplateOut])
+async def list_email_templates(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(super_admin_dep),
+) -> list[EmailTemplate]:
+    rows = (
+        await db.scalars(
+            select(EmailTemplate).order_by(EmailTemplate.code.asc())
+        )
+    ).all()
+    return list(rows)
+
+
+@router.patch(
+    "/email-templates/{template_id}", response_model=EmailTemplateOut
+)
+async def update_email_template(
+    template_id: uuid.UUID,
+    payload: EmailTemplateUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(super_admin_dep),
+) -> EmailTemplate:
+    tmpl = await db.get(EmailTemplate, template_id)
+    if tmpl is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="template not found",
+        )
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(tmpl, field, value)
+    await db.commit()
+    await db.refresh(tmpl)
+    return tmpl
+
+
+# ---- Maintenance jobs -----------------------------------------------------
+
+
+@router.post("/jobs/expire-leads")
+async def run_expire_leads_job(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(super_admin_dep),
+) -> dict[str, int]:
+    """Manual trigger for the lead-expiry sweep. The same sweep also runs
+    hourly via the in-process scheduler."""
+    return await expire_overdue_leads(db)

@@ -32,11 +32,18 @@ class Settings(BaseSettings):
 
     EMAIL_BACKEND: Literal["console", "smtp", "sendgrid"] = "console"
     EMAIL_FROM: str = "no-reply@b2cagent.local"
+    EMAIL_FROM_NAME: str = "B2C Tour Agent"
+    # Base URL of the web app. Used to build the absolute href on every
+    # email button (templates substitute {link_url} / {app_url}).
+    FRONTEND_BASE_URL: str = "http://localhost:5173"
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_STARTTLS: bool = True
+    # When true, connects via implicit TLS (SMTPS) instead of STARTTLS.
+    # Port 465 requires this; port 587 typically uses STARTTLS.
+    SMTP_SSL: bool = False
     SENDGRID_API_KEY: str = ""
 
     SMS_BACKEND: Literal["console", "twilio"] = "console"

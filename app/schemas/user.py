@@ -20,6 +20,7 @@ class MeOut(BaseModel):
     default_lat: float | None = None
     default_lng: float | None = None
     default_location: str | None = None
+    avatar_url: str | None = None
     created_at: datetime
 
 

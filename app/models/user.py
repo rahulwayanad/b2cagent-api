@@ -37,6 +37,8 @@ class User(UUIDPKMixin, TimestampMixin, Base):
     default_lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     default_location: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     properties: Mapped[list["Property"]] = relationship(
         "Property",
         back_populates="manager",

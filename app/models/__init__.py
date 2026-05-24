@@ -11,7 +11,9 @@ from app.models.enums import (
     PropertyType,
     UserRole,
 )
+from app.models.email_template import EmailTemplate
 from app.models.field_config import FieldConfig
+from app.models.inbox import BidMessage, Notification
 from app.models.lead import Lead, LeadPropertyMatch
 from app.models.property import Property
 from app.models.property_amenity import PropertyAmenity
@@ -23,14 +25,17 @@ from app.models.user import User
 
 __all__ = [
     "Bid",
+    "BidMessage",
     "BidPayment",
     "BidStatus",
     "Booking",
     "BookingStatus",
+    "EmailTemplate",
     "FieldConfig",
     "Lead",
     "LeadPropertyMatch",
     "LeadStatus",
+    "Notification",
     "PaymentMethod",
     "PaymentStatus",
     "PrivacyType",

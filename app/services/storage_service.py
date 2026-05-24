@@ -35,6 +35,17 @@ def build_photo_key(*, property_id: uuid.UUID, content_type: str) -> str:
     return f"properties/{property_id}/photos/{uuid.uuid4()}.{ext}"
 
 
+def build_avatar_key(*, user_id: uuid.UUID, content_type: str) -> str:
+    ext = CONTENT_TYPE_TO_EXT.get(content_type)
+    if ext is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported content_type {content_type!r}; "
+            f"allowed: {sorted(CONTENT_TYPE_TO_EXT)}",
+        )
+    return f"avatars/{user_id}/{uuid.uuid4()}.{ext}"
+
+
 class Storage(Protocol):
     async def upload(self, *, key: str, data: bytes, content_type: str) -> str: ...
     async def delete(self, *, url: str) -> None: ...

@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.services.scheduler import start_scheduler, stop_scheduler
 
 import os
 
@@ -82,6 +83,16 @@ if settings.STORAGE_BACKEND == "local":
     )
 
 app.include_router(api_router)
+
+
+@app.on_event("startup")
+async def _on_startup() -> None:
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+async def _on_shutdown() -> None:
+    await stop_scheduler()
 
 
 @app.get("/")

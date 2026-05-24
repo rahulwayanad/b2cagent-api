@@ -59,6 +59,7 @@ from app.services.notifications import (
     get_sms_sender,
     send_bid_notification,
 )
+from app.services import notification_service as notif_service
 from app.services.subscription_service import check_manager_can_accept
 
 router = APIRouter(tags=["bids"])
@@ -556,8 +557,10 @@ async def accept_bid(
     ).all()
     for other in others:
         other.status = BidStatus.on_hold
+        await notif_service.on_bid_held(db, other)
 
     bid.status = BidStatus.accepted
+    await notif_service.on_bid_accepted(db, bid)
     # Stamp the accept moment so the manager's monthly quota counts this
     # action even if the bid is later withdrawn or rejected.
     from datetime import datetime, timezone
@@ -642,6 +645,7 @@ async def reject_bid(
             detail=f"cannot reject bid in status={bid.status.value}"
             + (" with a payment already recorded" if bid.payment else ""),
         )
+    await notif_service.on_bid_rejected(db, bid)
     await db.commit()
     _queue_notification(
         background_tasks,
