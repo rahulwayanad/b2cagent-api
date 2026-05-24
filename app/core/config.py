@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +17,18 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     FRONTEND_URL: str = "http://localhost:5173"
+    # Comma-separated extra origins, e.g. "http://localhost:5173,http://localhost:3000"
+    CORS_EXTRA_ORIGINS: str = ""
+
+    @property
+    def cors_origins(self) -> list[str]:
+        origins = [self.FRONTEND_URL]
+        if self.CORS_EXTRA_ORIGINS:
+            for o in self.CORS_EXTRA_ORIGINS.split(","):
+                o = o.strip()
+                if o and o not in origins:
+                    origins.append(o)
+        return origins
 
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""

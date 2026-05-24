@@ -11,7 +11,9 @@ from app.core.database import Base
 from app import models  # noqa: F401  (import models so they register on Base.metadata)
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Escape % so configparser doesn't treat URL-encoded chars (%22, %3A) as
+# interpolation syntax.
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
