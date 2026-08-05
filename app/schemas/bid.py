@@ -28,6 +28,7 @@ class BidWithAgentOut(BaseModel):
     children: int
     created_at: datetime
     payment: BidPaymentSummary | None = None
+    countered_amount: Decimal | None = None
 
 
 # Agent-facing — one of their own bids with property + lead context.
@@ -48,6 +49,7 @@ class AgentBidOut(BaseModel):
     status: BidStatus
     created_at: datetime
     payment: BidPaymentSummary | None = None
+    countered_amount: Decimal | None = None
 
 
 # Manager-facing — one bid across any of their properties, with agent + lead.
@@ -70,6 +72,7 @@ class ManagerBidOut(BaseModel):
     status: BidStatus
     created_at: datetime
     payment: BidPaymentSummary | None = None
+    countered_amount: Decimal | None = None
 
 
 class OptimalBidsOut(BaseModel):

@@ -64,6 +64,13 @@ class Bid(UUIDPKMixin, TimestampMixin, Base):
     accepted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # When a manager wants to negotiate, they "counter" the bid with a
+    # different per-night rate. The bid stays pending; the agent sees the
+    # counter and either accepts (their `amount` is set to this value and the
+    # bid moves to accepted) or declines (bid → withdrawn).
+    countered_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )
 
     lead: Mapped["Lead"] = relationship("Lead", back_populates="bids")
     property: Mapped["Property"] = relationship("Property", back_populates="bids")

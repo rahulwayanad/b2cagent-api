@@ -10,10 +10,12 @@ from sqlalchemy import (
     Enum as SAEnum,
     ForeignKey,
     Numeric,
+    String,
     Text,
     UniqueConstraint,
     Uuid,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -50,5 +52,18 @@ class BidPayment(UUIDPKMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Invoice metadata captured at checkout time. `invoice_address_json` is the
+    # snapshot the agent confirmed (may differ from lead.* if edited). Stored
+    # so the invoice can be reissued without re-deriving from a mutated lead.
+    invoice_no: Mapped[str | None] = mapped_column(
+        String(32), unique=True, nullable=True
+    )
+    invoice_address_json: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    delivery_channels: Mapped[str | None] = mapped_column(
+        String(64), nullable=True  # CSV like "email,whatsapp"
+    )
 
     bid: Mapped["Bid"] = relationship("Bid", back_populates="payment")

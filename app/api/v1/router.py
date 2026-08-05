@@ -7,6 +7,7 @@ from app.api.v1 import (
     bids,
     bookings,
     catalog,
+    geocode,
     inbox,
     leads,
     properties,
@@ -28,6 +29,7 @@ api_router.include_router(catalog.router)
 api_router.include_router(inbox.router)
 api_router.include_router(admin.router)
 api_router.include_router(public.router)
+api_router.include_router(geocode.router)
 
 
 @api_router.get("/health")

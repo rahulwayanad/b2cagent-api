@@ -155,6 +155,40 @@ async def on_bid_accepted(db: AsyncSession, bid: Bid) -> None:
     )
 
 
+async def on_bid_countered(db: AsyncSession, bid: Bid) -> None:
+    """Manager proposed a different per-night rate. Notify the agent who
+    placed the bid; they can accept or decline from MyBids."""
+    prop = await _property_with_manager(db, bid.property_id)
+    name = prop.name if prop else "the property"
+    amount = _money(bid.countered_amount) if bid.countered_amount else "—"
+    your_bid = _money(bid.amount)
+    await _notify(
+        db,
+        user_id=bid.agent_id,
+        event="bid_countered",
+        audience_role="agent",
+        title="Manager countered your bid",
+        body=f"{amount}/night for {name} (your bid was {your_bid}/night).",
+        link="/agent/bids?filter=pending",
+        related_bid_id=bid.id,
+    )
+    agent = await db.scalar(select(User).where(User.id == bid.agent_id))
+    await _email(
+        db,
+        code="bid_countered",
+        to=agent.email if agent else None,
+        context={
+            "agent_name": agent.full_name if agent else "there",
+            "property_name": name,
+            "countered_amount": amount,
+            "original_amount": your_bid,
+            "check_in": bid.check_in.isoformat(),
+            "check_out": bid.check_out.isoformat(),
+        },
+        link="/agent/bids?filter=pending",
+    )
+
+
 async def on_bid_rejected(db: AsyncSession, bid: Bid) -> None:
     prop = await _property_with_manager(db, bid.property_id)
     name = prop.name if prop else "the property"

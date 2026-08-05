@@ -10,8 +10,10 @@ Property browsing for agents (without b2b_rate) lives here as well.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
+
+from pydantic import BaseModel, Field
 
 from fastapi import (
     APIRouter,
@@ -143,6 +145,7 @@ def _to_bid_with_agent(bid: Bid) -> BidWithAgentOut:
         payment=BidPaymentSummary.model_validate(bid.payment)
         if bid.payment
         else None,
+        countered_amount=bid.countered_amount,
     )
 
 
@@ -187,6 +190,7 @@ async def list_my_bids(
             payment=BidPaymentSummary.model_validate(b.payment)
             if b.payment
             else None,
+            countered_amount=b.countered_amount,
         )
         for b in rows
     ]
@@ -399,6 +403,7 @@ async def list_manager_bids(
             payment=BidPaymentSummary.model_validate(b.payment)
             if b.payment
             else None,
+            countered_amount=b.countered_amount,
         )
         for b in rows
     ]
@@ -563,7 +568,6 @@ async def accept_bid(
     await notif_service.on_bid_accepted(db, bid)
     # Stamp the accept moment so the manager's monthly quota counts this
     # action even if the bid is later withdrawn or rejected.
-    from datetime import datetime, timezone
     bid.accepted_at = datetime.now(timezone.utc)
 
     # Flip the parent lead to won. The Booking row is NOT created here anymore
@@ -655,4 +659,151 @@ async def reject_bid(
         email_sender=email_sender,
         sms_sender=sms_sender,
     )
+    return _to_bid_with_agent(bid)
+
+
+# ---- Counter-offer flow ------------------------------------------------
+#
+# Manager proposes a different per-night rate. The bid stays `pending` but
+# `countered_amount` is set. The agent decides next:
+#   - Accept counter  → bid.amount = countered_amount, status = accepted
+#                       (runs the same overlap-hold logic as accept_bid)
+#   - Decline counter → status = withdrawn
+
+
+class CounterIn(BaseModel):
+    amount: Decimal = Field(..., gt=0)
+
+
+@router.patch("/bids/{bid_id}/counter", response_model=BidWithAgentOut)
+async def counter_bid_endpoint(
+    bid_id: uuid.UUID,
+    payload: CounterIn,
+    user: User = Depends(manager_dep),
+    db: AsyncSession = Depends(get_db),
+) -> BidWithAgentOut:
+    bid = await _load_bid_for_manager(bid_id, user, db)
+    if bid.status != BidStatus.pending:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"can only counter a pending bid (status={bid.status.value})",
+        )
+    floor = bid.property.b2b_rate
+    if payload.amount <= floor:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"counter must be above the minimum floor (₹{floor:,.0f})",
+        )
+    if payload.amount == bid.amount:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="counter must differ from the agent's bid",
+        )
+    bid.countered_amount = payload.amount
+    await notif_service.on_bid_countered(db, bid)
+    await db.commit()
+    return _to_bid_with_agent(bid)
+
+
+@router.patch(
+    "/bids/{bid_id}/counter/accept", response_model=BidWithAgentOut
+)
+async def accept_counter_endpoint(
+    bid_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    user: User = Depends(agent_dep),
+    db: AsyncSession = Depends(get_db),
+    email_sender: EmailSender = Depends(get_email_sender),
+    sms_sender: SMSSender = Depends(get_sms_sender),
+) -> BidWithAgentOut:
+    bid = await db.scalar(
+        select(Bid)
+        .options(
+            selectinload(Bid.agent),
+            selectinload(Bid.property),
+            selectinload(Bid.lead),
+            selectinload(Bid.payment),
+        )
+        .where(Bid.id == bid_id)
+    )
+    if bid is None or bid.agent_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="bid not found"
+        )
+    if bid.countered_amount is None or bid.status != BidStatus.pending:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="no active counter on this bid",
+        )
+    # Mutate to the manager's price and run the same overlap-hold + accept
+    # flow as a normal accept.
+    bid.amount = bid.countered_amount
+    bid.countered_amount = None
+    others = (
+        await db.scalars(
+            select(Bid)
+            .options(selectinload(Bid.agent))
+            .where(
+                Bid.property_id == bid.property_id,
+                Bid.id != bid.id,
+                Bid.status == BidStatus.pending,
+                Bid.check_in <= bid.check_out,
+                Bid.check_out >= bid.check_in,
+            )
+        )
+    ).all()
+    for other in others:
+        other.status = BidStatus.on_hold
+        await notif_service.on_bid_held(db, other)
+    bid.status = BidStatus.accepted
+    bid.accepted_at = datetime.now(timezone.utc)
+    await notif_service.on_bid_accepted(db, bid)
+    lead = await db.get(Lead, bid.lead_id)
+    if lead is not None and lead.status == LeadStatus.active:
+        lead.status = LeadStatus.won
+    await db.commit()
+    property_name = bid.property.name
+    _queue_notification(
+        background_tasks,
+        bid=bid,
+        property_name=property_name,
+        agent=bid.agent,
+        email_sender=email_sender,
+        sms_sender=sms_sender,
+    )
+    for other in others:
+        _queue_notification(
+            background_tasks,
+            bid=other,
+            property_name=property_name,
+            agent=other.agent,
+            email_sender=email_sender,
+            sms_sender=sms_sender,
+        )
+    return _to_bid_with_agent(bid)
+
+
+@router.patch(
+    "/bids/{bid_id}/counter/decline", response_model=BidWithAgentOut
+)
+async def decline_counter_endpoint(
+    bid_id: uuid.UUID,
+    user: User = Depends(agent_dep),
+    db: AsyncSession = Depends(get_db),
+) -> BidWithAgentOut:
+    bid = await db.scalar(
+        select(Bid).where(Bid.id == bid_id)
+    )
+    if bid is None or bid.agent_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="bid not found"
+        )
+    if bid.countered_amount is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="no active counter on this bid",
+        )
+    bid.status = BidStatus.withdrawn
+    bid.countered_amount = None
+    await db.commit()
     return _to_bid_with_agent(bid)

@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.redis import get_redis
-from app.core.security import require_active_role
+from app.core.security import require_active_role, require_role
 from app.models import (
     Booking,
     BookingStatus,
@@ -55,6 +55,10 @@ from app.services.storage_service import Storage, build_photo_key, get_storage
 router = APIRouter(prefix="/properties", tags=["properties"])
 
 manager_dep = require_active_role(UserRole.manager)
+# `manager_or_admin_dep` lets super_admins act on any property without
+# pretending to be a manager (no X-Active-Role gymnastics needed). Use this
+# on read + edit endpoints where the admin console needs to drive things.
+manager_or_admin_dep = require_role(UserRole.manager)
 
 
 async def _reject_disabled(
@@ -77,7 +81,7 @@ async def _reject_disabled(
 
 async def get_owned_property(
     property_id: uuid.UUID,
-    user: User = Depends(manager_dep),
+    user: User = Depends(manager_or_admin_dep),
     db: AsyncSession = Depends(get_db),
 ) -> Property:
     prop = await db.get(Property, property_id)
@@ -86,7 +90,8 @@ async def get_owned_property(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="property not found",
         )
-    if prop.manager_id != user.id:
+    # Super admins can edit any property; managers only their own.
+    if user.role != UserRole.super_admin and prop.manager_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="you do not own this property",
@@ -248,7 +253,7 @@ def _property_to_out(prop: Property) -> PropertyOut:
 @router.get("/{property_id}", response_model=PropertyDetailOut)
 async def get_property(
     property_id: uuid.UUID,
-    user: User = Depends(manager_dep),
+    user: User = Depends(manager_or_admin_dep),
     db: AsyncSession = Depends(get_db),
 ) -> PropertyDetailOut:
     result = await db.execute(
@@ -265,7 +270,7 @@ async def get_property(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="property not found"
         )
-    if prop.manager_id != user.id:
+    if user.role != UserRole.super_admin and prop.manager_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="you do not own this property",

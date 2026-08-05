@@ -29,6 +29,7 @@ _BADGE_BY_CODE: dict[str, tuple[str, str]] = {
     "bid_held": ("Bid on hold", "badge-warn"),
     "bid_withdrawn": ("Bid withdrawn", "badge-neutral"),
     "booking_confirmed": ("Booking confirmed", "badge-success"),
+    "invoice_issued": ("Invoice", "badge-info"),
     "profile_updated": ("Profile", "badge-neutral"),
     "subscription_limit_warning": ("Plan limit", "badge-warn"),
     "subscription_upgraded": ("Plan upgraded", "badge-success"),
